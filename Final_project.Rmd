@@ -1,0 +1,420 @@
+---
+title: "Time Series Analysis Final Report"
+author: "106024518 張家豪"
+output:
+  pdf_document:
+    fig_height: 4
+    includes:
+      in_header: header.tex
+    keep_tex: yes
+    latex_engine: xelatex
+  word_document: default
+  html_document: default
+---
+
+```{r global_options, include = FALSE}
+knitr::opts_chunk$set(warning = FALSE,message = FALSE,echo = FALSE,fig.width = 8,
+                      fig.height = 3)
+```
+
+```{r setup, include=FALSE}
+library(tidyverse);library(tseries);library(forecast);library(lubridate)
+library(RColorBrewer);library(Ohit);library(glmnet)
+```
+
+## 動機
+
+股價是否能被預測, 一直存在著正反兩派的觀點。在參加趨勢科技舉辦的台灣ETF價格預測競賽之餘，嘗試利用時序的方法來預測股價。使用比賽中3支基金的預測情形當作衡量台灣ETF系列股價是否能被預測的指標。
+
+
+## Dataset 介紹
+
+使用台灣ETF價格預測競賽官方提供的2013年1月1日至2018年6月1日的ETF基金日資料和備用的1600個股日資料作為產生random walk的變數特徵。(基金選擇0050、0051、0053這3支)
+
+資料的colname 有時間(date)、股票名稱(name)、開盤價(op)、最大值(maxp)、最小值(minp)、收盤價(cp)和交易張數(trading)。
+
+需要預測的變數為收盤價(cp)，往後都只考慮收盤價的時間序列性質。
+
+
+## 資料一
+
+台股代號0051的元大台灣中型100ETF成立於2006年8月24日，追蹤台灣證券交易所與FTSE合作編製的台灣中型100指數。台灣中型100指數由台股中市值排名第51到150這100家公司組成。
+
+```{r}
+dat <- read.csv("tetfp.csv")
+colnames(dat)= c("id","date","name","op","maxp","minp","cp","trading")
+dat$trading = as.numeric( gsub(",","",dat$trading))
+dat$date =  ymd(dat$date)
+dat1 = dat %>% filter(id==51)
+head(dat1)
+```
+
+
+```{r}
+dat1 %>% select(date,cp) %>%  ggplot( aes(x=date,y=cp)) + geom_line() +
+  ggtitle("0051") + geom_smooth()
+```
+
+
+# 資料一初步分析
+
+首先觀察0051這個資料的acf和pacf圖
+
+```{r}
+par(mfrow=c(1,2))
+acf(dat1$cp,lag=20)
+pacf(dat1$cp,lag=20)
+```
+
+由acf圖可知此序列為非穩定的時間序列，因此先考慮做一階差分。
+
+
+```{r}
+par(mfrow=c(1,2))
+acf(diff(dat1$cp),lag=20)
+pacf(diff(dat1$cp),lag=20)
+```
+
+由一階差分的acf圖可看出在lag 1後cut off ，pacf圖也在lag 2後cut off。
+考慮fit一個ARIMA(1,1,1)的model。
+
+
+ARIMA(1,1,1) model 的係數如下:
+```{r}
+model1 = arima(dat1$cp, order = c(1, 1, 1)) ; model1
+```
+
+觀察ARIMA(1,1,1) model 的 residual plot
+
+
+```{r,fig.height = 4}
+plot(model1$residual, ylab = "residual",main="model 1 residual plot",type="b")
+abline(h=c(-1.5,0,1.5),col=2,lty=c(2,1,2))
+index = which(abs(model1$residuals)>1.5)
+text(x=index-110,y=model1$residuals[index],labels =dat1$date[index])
+```
+
+
+可以看出在特定的時間residual非常大，猜測有重大事件發生。
+
+   日期    |            事件
+-----------|------------------------------------
+2013/10/11 | 經濟日報 頭條—美債限僵局有解 美股狂飆 
+2015/08/24 | 經濟日報 頭條—救台股 禁止平盤以下放空 
+2016/12/27 | 漲停板 (達到台股單日漲幅上限10%)
+2016/12/28 | 漲停板 (反彈回原來數據)
+2018/02/06 | 經濟日報 美股崩跌逾千點 投資人起床以為自己眼花 
+
+
+檢查 residual plot 是否有序列相關性，先畫出acf和pacf圖。
+
+```{r}
+par(mfrow = c(1, 2))
+acf(c(model1$residual), main = "Residuals", lag = 20)
+pacf(c(model1$residual), main = "Residuals", lag = 20)
+```
+
+使用Box-Ljung test
+
+```{r}
+a = 3:50
+plot(a,sapply(a,function(i)  Box.test(c(model1$residual),lag = i,type = "Ljung", fitdf = 2)$p.value ),ylim = c(0,1),xlab = "lag",ylab = "p-value",main = "Box-Ljung test")
+abline(h=0.05,col=2,lty=2)
+```
+
+檢定結果為不拒絕$\rho=0$在顯著水準$\alpha=0.05$下。
+
+
+# 資料一預測
+
+使用 model 1 的 trainind set RMSE為0.2774123
+
+```{r}
+ accuracy(model1)
+```
+
+Model 1 配適情形:
+
+```{r}
+k=forecast(model1, 5)
+plot(dat1$cp,type="l")
+points(k$fitted,col=2,type="l")
+legend("topleft",legend=c("true","fitting"),col=c(1,2),lty=1,cex=0.7)
+```
+
+
+*使用model 1 的五步預測
+
+```{r}
+k1=forecast(model1, 5);k1
+```
+
+預測結果 |  預測值   |  實際股價
+---------|-----------|-----------
+2018/6/4 | 33.89897  | 34.25
+2018/6/5 | 33.88800  | 34.32
+2018/6/6 | 33.88507  | 34.74
+2018/6/7 | 33.88428  | 34.78
+2018/6/8 | 33.88407  | 34.69
+
+預測曲線 (虛線為95%區間)
+
+```{r}
+true=c(34.25,	34.32,	34.74	,34.78,34.69)
+plot(c(1:5),k$mean,type="b",main="0051 forecast",ylim =c(min(k1$mean)-2,max(k1$mean)+2),ylab = "cp")
+points(c(1:5),as.numeric( k1$lower[,2]),col=1,lty=2,type = "b")
+points(c(1:5),as.numeric( k1$upper[,2]),col=1,lty=2,type = "b")
+points(c(1:5),true,col=2,type="b")
+legend("topleft",legend = c("true","pred"),col=c(2,1),lty=1,cex=0.7)
+```
+
+
+mse 為 0.4985174
+
+
+
+*fit 5個model (使用一步預測)
+
+```{r}
+k2 = forecast(arima(c(dat1$cp,k1$mean[1]),order = c(1,1,1)),1)
+k3 = forecast(arima(c(dat1$cp,k1$mean[1],k2$mean[1]),order = c(1,1,1)),1)
+k4 = forecast(arima(c(dat1$cp,k1$mean[1],k2$mean[1],k3$mean[1]),order = c(1,1,1)),1)
+k5 = forecast(arima(c(dat1$cp,k1$mean[1],k2$mean[1],k3$mean[1],k4$mean[1]),order = c(1,1,1)),1)
+
+true=c(34.25,	34.32,	34.74	,34.78,34.69)
+plot(c(1:5),c(k1$mean[1],k2$mean[1],k3$mean[1],k4$mean[1],k5$mean[1]),type="b",main="0051 forecast",ylim =c(min(k$mean)-2,max(k$mean)+2),ylab = "cp")
+points(c(1:5),as.numeric(k1$lower[,1],k2$lower[,1],k3$lower[,1],k4$lower[,1],k5$lower[,1]),col=1,lty=2,type = "b")
+points(c(1:5),as.numeric(k1$upper[,2],k2$upper[,2],k3$upper[,2],k4$upper[,2],k5$upper[,2]),col=1,lty=2,type = "b")
+points(c(1:5),true,col=2,type="b")
+legend("topleft",legend = c("true","pred"),col=c(2,1),lty=1,cex=0.7)
+```
+
+預測結果 |  預測值   |  實際股價
+---------|-----------|-----------
+2018/6/4 | 33.89897  | 34.25
+2018/6/5 | 33.88798  | 34.32
+2018/6/6 | 33.88503  | 34.74
+2018/6/7 | 33.88424  | 34.78
+2018/6/8 | 33.88403  | 34.69
+
+
+
+MSPE 為 0.498562
+
+由上圖可知道做5期預測值均在95%信賴區間內。
+
+
+
+
+
+## 資料二
+
+臺灣證券交易所臺灣50指數是由英國富時指數有限公司（FTSE）協助臺灣證券交易所設計和計算，在每年一、四、七和十月進行季間審核，成分股的變動是在審核當月第三個星期五後的下一個交易日執行。
+
+
+```{r}
+dat2 = dat %>% filter(id==50)
+head(dat2)
+```
+
+
+```{r}
+dat2 %>% select(date,cp) %>%  ggplot( aes(x=date,y=cp)) + geom_line() +
+  ggtitle("0050") + geom_smooth()
+```
+
+# 資料二初步分析
+
+首先觀察0050這個資料的acf和pacf圖
+
+```{r}
+par(mfrow=c(1,2))
+acf(dat2$cp,lag=20)
+pacf(dat2$cp,lag=20)
+```
+
+由acf圖可知此序列為非穩定的時間序列，因此先考慮做一階差分。
+
+
+```{r}
+par(mfrow=c(1,2))
+acf(diff(dat2$cp),lag=20)
+pacf(diff(dat2$cp),lag=20)
+```
+
+由一階差分的acf圖可看出在lag 2後cut off ，pacf圖在lag 2後cut off。
+考慮fit一個ARIMA(2,1,0)的model。
+
+係數如下:
+
+```{r}
+model2 = arima(dat2$cp,order = c(2,1,0));model2
+```
+
+由model2看得出在ar1係數的se有偏大的情況，修改模型為固定ar1係數的模型
+
+```{r}
+model2.1 = arima(dat2$cp,order = c(2,1,0),fixed = c(0,NA));model2.1
+```
+
+檢查配適狀況
+
+```{r,fig.height = 4}
+plot(model2.1$residuals,main="Residuals Plot")
+abline(h=c(0,2.2,-2.2),col=c(2,2,2),lty=c(1,2,2))
+index = which(abs(model2.1$residuals)>2.2)
+text(x=index-110,y=model2.1$residuals[index],labels =dat2$date[index])
+```
+
+檢查配適殘差
+
+```{r}
+par(mfrow=c(1,2))
+acf(model2.1$residuals)
+pacf(model2.1$residuals)
+```
+
+使用Box-Ljung test，檢查殘差是否有序列相關性
+
+```{r}
+a = 3:50
+plot(a,sapply(a,function(i)  Box.test(c(model2.1$residual),lag = i,type = "Ljung", fitdf = 2)$p.value ),ylim = c(0,1),xlab = "lag",ylab = "p-value",main = "Box-Ljung test")
+abline(h=0.05,col=2,lty=2)
+```
+
+檢定結果為不拒絕$\rho=0$在顯著水準$\alpha=0.05$下。
+
+
+
+# 資料二預測
+
+使用 model 2.1 的 trainind set RMSE為 0.5774158
+
+```{r}
+ accuracy(model2.1)
+```
+
+
+*使用model 1 的五步預測
+
+```{r}
+k2=forecast(model2.1, 5);k2
+```
+
+預測結果 |  預測值   |  實際股價
+---------|-----------|-----------
+2018/6/4 | 81.32581  | 81.40
+2018/6/5 | 81.28433  | 82.60
+2018/6/6 | 81.28600  | 83.30
+2018/6/7 | 81.28887  | 83.40
+2018/6/8 | 81.28876  | 82.60
+
+預測曲線 (虛線為95%區間)
+
+```{r}
+true=c(81.40,	82.60,	83.30	,83.40,82.60)
+plot(c(1:5),k2$mean,type="b",main="0050 forecast",ylim =c(min(k2$mean)-3,max(k2$mean)+3),ylab = "cp")
+points(c(1:5),as.numeric( k2$lower[,2]),col=1,lty=2,type = "b")
+points(c(1:5),as.numeric( k2$upper[,2]),col=1,lty=2,type = "b")
+points(c(1:5),true,col=2,type="b")
+legend("topleft",legend = c("true","pred"),col=c(2,1),lty=1,cex=0.7)
+```
+
+
+MSPE 為 2.393777
+
+由上圖可知道做5期預測值大致在95%信賴區間內。
+
+
+## 資料三
+
+代號0053為元大台灣ETF傘型證券投資信託基金之電子科技證券投資信託基金，在2007年7月16日上市。為了分散風險和確保基金之安全，複製臺灣證券交易所電子類發行量加權股價指數之績效表現為本基金投資組合管理之目標，以誠信原則及專業經營方式，將本基金投資於上市股票、上櫃股票、以原股東身份認購已上市之現金增資股票及認購已上市同種類現金增資承銷股票及初次上市股票之承銷股票。
+
+```{r}
+dat3 = dat %>% filter(id==53)
+dat3 %>% select(date,cp) %>%  ggplot( aes(x=date,y=cp)) + geom_line() +
+  ggtitle("0053") + geom_smooth()
+```
+
+檢查資料三的acf和pacf
+
+```{r}
+par(mfrow=c(1,2))
+acf(dat3$cp);pacf(dat3$cp)
+```
+
+
+該筆資料可由acf圖看出為明顯的nomstationary資料，考慮做一階差分並觀察其acf和pacf
+
+
+```{r}
+par(mfrow=c(1,2))
+acf(diff(dat3$cp));pacf(diff(dat3$cp))
+```
+
+
+由上圖可知道，此筆資料一階差分後為random work，因此考慮$$d_t=y_t-y_{t-1}=\boldsymbol{x_t}\boldsymbol{\beta}+\epsilon_t$$模型，其中X使用1386家公司個股的收盤價。
+
+
+```{r}
+newdat = read.csv("tsharep.csv")
+newdat = newdat[!duplicated(newdat),]
+colnames(newdat) =c("id","date","name","op","maxp","minp","cp","trading")
+newdat$date =  ymd(newdat$date)
+newdat$cp = as.numeric(as.character( newdat$cp))
+newdat = newdat[,c(1,2,7)] %>% group_by(date) %>% spread(id,cp)
+newdat = newdat[,complete.cases(t(newdat) )][-1,-1]
+d = diff(dat3$cp) 
+```
+
+
+由於預測5期需要5期的X當做預測的變數，因此修改模型為$$d_t=y_t-y_{t-1}=\boldsymbol{x_{t-5}}\boldsymbol{\beta}+\epsilon_t$$
+
+
+使用OGA選模後配適線性模型，一階差分的預測值和95%信賴區間為
+
+```{r}
+fit = Ohit(X=as.matrix(newdat[1:1321,]),y=d[6:1326],HDIC_Type = "HDAIC")
+data = data.frame(cbind(d[6:1326],as.matrix(newdat[1:1321,fit$J_OGA])))
+fit1 = lm(V1~.,data )
+cc = predict(fit1,data.frame(newdat[1322:1326,fit$J_OGA]) ,level=.95,interval="confidence");cc
+```
+
+一階差分的配適圖形:
+
+```{r}
+true = c(36.39,36.37,36.74,36.88,36.61)
+dtrue = diff(c(last(dat3$cp),true))
+plot(1:5,dtrue,type = "b",col=2,ylim = c(-0.3,0.6))
+points(cc[,1],type="b")
+points(cc[,2],type = "b",lty=2)
+points(cc[,3],type = "b",lty=2)
+```
+
+看得出在第一天和第三天均超過95%信賴區間。
+
+五期預測值為:
+
+```{r}
+num = c(last(dat3$cp)+cc[1,1],last(dat3$cp)+cc[1,1]+cc[2,1],last(dat3$cp)+cc[1,1]+cc[2,1]+cc[3,1],
+  last(dat3$cp)+cc[1,1]+cc[2,1]+cc[3,1]+cc[4,1],last(dat3$cp)+cc[1,1]+cc[2,1]+cc[3,1]+cc[4,1]+cc[5,1])
+num
+```
+
+預測結果 |  預測值   |  實際股價
+---------|-----------|-----------
+2018/6/4 | 35.78571  | 36.39
+2018/6/5 | 35.78287  | 36.37
+2018/6/6 | 35.71634  | 36.74
+2018/6/7 | 35.61833  | 36.88
+2018/6/8 | 35.53605  | 36.61
+
+MSPE為0.9005849
+
+
+## 結論
+
+由三筆資料可看出模型都能夠抓出大概的趨勢，但在精確度分面有待進一步的加強。特別是在資料二的MSPE高達2.393777，資料二為台灣前50大公司所構成的受到波動性大，對於預測並不太適合。也許在波動性小的股票可以進行預測。
+
+
+
